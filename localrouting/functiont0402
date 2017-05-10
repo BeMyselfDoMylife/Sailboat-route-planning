@@ -17,8 +17,8 @@ ntack = howntack(xknext , yknext , xkstart , ykstart , psi_now , betaAW ,  lengt
 ntackam1 = 1.0; %这个系数是对ntack的修正，当遇到障碍物时，加大ntack，以防止船因为考虑ntack而走不出来
 ntackam2 = 1.0;
 
-thrustRightmax = 0;
 psi_dRight = psi_now;
+thrustRightmax = 0;
 for deltaalpha = 0 : 5*pi/180 : 180*pi/180
     betaD = betaAW + deltaalpha;
     thrustCoef = thrust4psid(betaD , betaAW);
