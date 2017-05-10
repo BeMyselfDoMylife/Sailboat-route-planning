@@ -8,9 +8,10 @@ for i = 1 : numvert
     yobstacle(i) = ykstart + obstacle(2,i);
 end
 
-betaLeeway = atan2(V , U);
+
 psiTarget = atan2(yknext - ynow ,xknext - xnow);
 lengthb2t = sqrt((xknext - xnow)^2 + (yknext - ynow)^2);
+betaLeeway = atan2(V , U);
 
 pc = [50 30 150]; % pc = [50 30 150]; %对于顺风时需要大一点的pc，所以这样设计
 ntack = howntack(xknext , yknext , xkstart , ykstart , psi_now , betaAW ,  lengthb2t , pc);
