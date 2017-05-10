@@ -1,0 +1,289 @@
+function psi_d  = fcn(xnow , ynow , xknext , yknext , xkstart , ykstart , k , U , V , psi_now , betaAW , obstacle )
+% obstacle为障碍物相对xk,yk的形状位置(限定为仅有一个多边形，若有多个障碍物设想（但此处未实现）可以在相邻探测点发现无障碍点的出现)
+numvert = size(obstacle , 2);
+xobstacle = zeros(1 , numvert);
+yobstacle = zeros(1 , numvert);
+for i = 1 : numvert
+    xobstacle(i) = xkstart + obstacle(1,i);
+    yobstacle(i) = ykstart + obstacle(2,i);
+end
+
+betaLeeway = atan2(V , U);
+psiTarget = atan2(yknext - ynow ,xknext - xnow);
+lengthb2t = sqrt((xknext - xnow)^2 + (yknext - ynow)^2);
+
+pc = [50 30 150]; % pc = [50 30 150]; %对于顺风时需要大一点的pc，所以这样设计
+ntack = howntack(xknext , yknext , xkstart , ykstart , psi_now , betaAW ,  lengthb2t , pc);
+ntackam1 = 1.0; %这个系数是对ntack的修正，当遇到障碍物时，加大ntack，以防止船因为考虑ntack而走不出来
+ntackam2 = 1.0;
+
+thrustRightmax = 0;
+psi_dRight = psi_now;
+for deltaalpha = 0 : 5*pi/180 : 180*pi/180
+    betaD = betaAW + deltaalpha;
+    thrustCoef = thrust4psid(betaD , betaAW);
+    psiD = betaD + psi_now;
+    if k == 0 || k == 1
+        safeCoef = avoidance(psiD , xnow , ynow , xobstacle , yobstacle);
+    else
+        safeCoef = 1;
+    end
+    thrustRight = safeCoef*thrustCoef*[cos(psiD),sin(psiD)]*[cos(psiTarget),sin(psiTarget)]';
+    if thrustRight > thrustRightmax
+        thrustRightmax = thrustRight;
+        psi_dRight = psiD;
+        if safeCoef < 0.5
+            ntackam1 = 1.5;
+        else
+            ntackam1 = 1.0;
+        end
+    end
+end
+thrustLeftmax = 0;
+psi_dLeft = psi_now;
+for deltaalpha = 0 : 5*pi/180 : 180*pi/180
+    betaD = betaAW - deltaalpha;
+    thrustCoef = thrust4psid(betaD , betaAW);
+    psiD = betaD + psi_now;
+    if k == 0 || k == 1
+        safeCoef = avoidance(psiD , xnow , ynow , xobstacle , yobstacle);
+    else
+        safeCoef = 1;
+    end
+    thrustLeft = safeCoef*thrustCoef*[cos(psiD),sin(psiD)]*[cos(psiTarget),sin(psiTarget)]';
+    if thrustLeft > thrustLeftmax
+        thrustLeftmax = thrustLeft;
+        psi_dLeft = psiD;
+        if safeCoef < 0.5
+            ntackam2 = 1.5;
+        else
+            ntackam2 = 1.0;
+        end
+    end
+end
+
+ntackam = max(ntackam1 , ntackam2);
+deltamaxRight = mod(abs(psi_dRight - psi_now),2*pi);
+if deltamaxRight > pi
+    deltamaxRight = deltamaxRight - 2*pi;
+end
+deltamaxLeft = mod(abs(psi_dLeft - psi_now),2*pi);
+if deltamaxLeft > pi
+    deltamaxLeft = deltamaxLeft - 2*pi;
+end
+
+if abs(deltamaxRight) < abs(deltamaxLeft)
+    if thrustLeftmax > ntackam*ntack*thrustRightmax
+        psi_d = psi_dLeft;
+    else
+        psi_d = psi_dRight;
+    end
+else
+    if thrustRightmax > ntackam*ntack*thrustLeftmax
+        psi_d = psi_dRight;
+    else
+        psi_d = psi_dLeft;
+    end
+end
+end
+
+function thrustCoef = thrust4psid(betaD , betaAW)
+    arsail = 2.5;
+    attack = howcontrolsail(betaAW);
+    if abs(attack) > 10
+        attack = 10;
+    end
+    [cls,cds] = sailcoef(attack,arsail);
+    theta = atan(cds/cls);
+    alpha = mod(betaD - betaAW , 2*pi);
+    if alpha > pi
+        alpha = alpha - 2*pi;
+        k = -1;
+    else
+        k = 1;
+    end
+    if abs(betaAW) >= 140*pi/180
+        coef0 = abs(sqrt(cls^2+cds^2)*sin(theta));
+         % 对于正顺和侧顺时，由于最大推力曲线的图形特性，有很大程度可行方向都被舍弃，因此人为加上coef0来避免这个现象
+    else
+        coef0 = 0;
+    end
+    if alpha < 0 
+        thrustCoef = k*sqrt(cls^2+cds^2)*sin(alpha + theta) + coef0;
+    elseif alpha > 0
+        thrustCoef = k*sqrt(cls^2+cds^2)*sin(alpha - theta) + coef0;
+    else
+        thrustCoef = 0;
+    end
+    if thrustCoef < 0
+        thrustCoef = 0;
+    end
+end
+
+function attack = howcontrolsail(betaAW)
+    betaAW = mod(betaAW,2*pi);
+    if betaAW > pi
+        betaAW = betaAW - 2*pi;
+        k = -1;
+    else
+        k = 1;
+    end
+    betaAWdata = [0:10:180]*pi/180;
+    attackdata = [8 8 8 8 8 27 31 39 39 50 50 55 59 64 64 73 77 82 90]*pi/180;
+    attack = k*interp1(betaAWdata , attackdata , abs(betaAW));
+end
+
+function [Cls,Cds] = sailcoef(attack,arsail)
+% generate a lookup table for the lift/drag coefficients for the sail
+% and compute Cls/Cds from the lookup table using interpolation.
+% lookup table
+adata =pi/180*[0	1	2	3	4	5	6	7	8	9	10	11	12	13	14	15	16 ...
+    17	18	19	20	21	22	23	24	25	26	27	30	35	40	45	50	55	60 ...
+    65	70	75	80	85	90	95	100	105	110	115	120	125	130	135	140	145	150 ...
+    155	160	165	170	175	180];
+cldata = [0.0000	0.1100	0.2200	0.3300	0.4180	0.5180	0.5048	0.6760	0.7189...
+    0.6969	0.5122	0.1642	0.0749	0.0967	0.1382	0.1861	0.2364	0.2873...
+    0.3393	0.3927	0.4463	0.5001	0.5539	0.6078	0.6617	0.7156	0.7700...
+    0.8277	0.8550	0.9800	1.0350	1.0500	1.0200	0.9550	0.8750	0.7600...
+    0.6300	0.5000	0.3650	0.2300	0.0900	-0.0500	-0.1850	-0.3200	-0.4500...
+    -0.5750	-0.6700	-0.7600	-0.8500	-0.9300	-0.9800	-0.9000	-0.7700	-0.6700...
+    -0.6350	-0.6800	-0.8500	-0.6600	0.0000];
+cddata = [0.0147	0.0148	0.0151	0.0156	0.0168	0.0181	0.0197	0.0214	0.0234...
+    0.0255	0.0277	0.0760	0.1230	0.1400	0.1580	0.1770	0.1960	0.2170...
+    0.2380	0.2600	0.2820	0.3050	0.3290	0.3540	0.3790	0.4050	0.4320...
+    0.4600	0.5700	0.7450	0.9200	1.0750	1.2150	1.3450	1.4700	1.5750...
+    1.6650	1.7350	1.7800	1.8000	1.8000	1.7800	1.7500	1.7000	1.6350...
+    1.5550	1.4650	1.3500	1.2250	1.0850	0.9250	0.7550	0.5750	0.4200...
+    0.3200	0.2300	0.1400	0.0550	0.0250];
+% 展弦比换算
+xdata = adata + cldata./pi*(1/arsail);
+yldata = cldata;
+yddata = cddata + cldata.^2/pi*(1/arsail);
+[xdata , xnum] = sort(xdata);
+yldata = yldata(xnum);
+yddata = yddata(xnum);
+
+attack=mod(attack,2*pi);
+if attack>pi
+    attack=attack-2*pi;
+end
+
+if attack>=0
+    Cls = interp1(xdata,yldata,attack);
+    Cds = interp1(xdata,yddata,attack);
+else
+    Cls = -1*interp1(xdata,yldata,-attack);
+    Cds = interp1(xdata,yddata,-attack);
+end
+end
+
+function safeCoef = avoidance(psiD , xnow , ynow , xobstacle , yobstacle )
+% obstacle需要按照边界顺序罗列
+Lmax = 50;
+numvert = size(xobstacle , 2);
+if numvert == 2
+    obstyle = 'line';
+elseif numvert <= 1 
+    obstyle = 'point';
+else
+    obstyle = 'polygon';
+end
+
+if strcmp(obstyle,'line')
+    vert1 = [xobstacle(1),yobstacle(1)];
+    vert2 = [xobstacle(2),yobstacle(2)];
+    distvert12 = (vert1-vert2)*(vert1-vert2)';
+    if distvert12 > 0.5*Lmax
+        vert11 = (vert1 + vert2)/2;
+         safeCoef1 = avoidline(psiD , xnow , ynow , vert11  , vert2);
+        safeCoef2 = avoidline(psiD , xnow , ynow , vert11  , vert1);
+        safeCoef = min(safeCoef1,safeCoef2);
+    else
+        safeCoef = avoidline(psiD , xnow , ynow , vert1  , vert2);
+    end
+elseif strcmp(obstyle,'polygon')
+    safeCoeflist = zeros(1,numvert*(numvert-1)/2);
+    k = 0;
+    for i = 2 : numvert
+        for j = 1 : i-1
+            k = k + 1;
+            vert1 = [xobstacle(i),yobstacle(i)];
+            vert2 = [xobstacle(j),yobstacle(j)];
+        	safeCoeflist(i) = avoidline(psiD , xnow , ynow , vert1 , vert2);
+        end
+    end
+    safeCoef = min(safeCoeflist);
+else
+    safeCoef = 1;
+end
+end
+
+function safei = avoidline(psiD , xnow , ynow , vert1 , vert2)
+vect1 = vert1 - [xnow , ynow];
+vect2 = vert2 - [xnow , ynow];
+dirvec = [cos(psiD),sin(psiD)];
+
+Lmin = 20;
+Lmax = 50;
+Lc = 0.5*Lmin;
+
+field0 = multip(vect1 , dirvec)*multip(vect2 , dirvec);
+field1 = vect1*dirvec';
+field2 = vect2*dirvec';
+
+if field1 <= 0 && field2 <= 0
+    safei = 1;
+elseif field0 <= 0
+    d = abs(multip(vect1,(vert2-vert1))/sqrt((vert2-vert1)*(vert2-vert1)')) ; % 计算当前点到直线距离
+    if d < Lmin
+        safei = 0;
+    elseif d < Lmax
+        safei = (d - Lmin)/(Lmax - Lmin);
+    else
+        safei = 1;
+    end
+else
+    if multip(vect1 , dirvec) <= 0 && multip(vect1 , vect2) < 0
+        mint = vect2*dirvec';
+        mincross = sqrt(vect2*vect2' - mint^2);
+    elseif multip(vect2 , dirvec) >= 0 && multip(vect1 , vect2) < 0
+        mint = vect1*dirvec';
+        mincross = sqrt(vect1*vect1' - mint^2);
+    elseif multip(vect2 , dirvec) >= 0 && multip(vect1 , vect2) >= 0
+        mint = vect2*dirvec';
+        mincross = sqrt(vect2*vect2' - mint^2);
+    elseif multip(vect1 , dirvec) <= 0 && multip(vect1 , vect2) >= 0
+        mint = vect1*dirvec';
+        mincross = sqrt(vect1*vect1' - mint^2);
+    else
+        mint = 100;
+        mincross = 100;
+    end
+    if mint > Lmax
+        safei = 1;
+    elseif mint <= Lmax && mint > Lmin
+        safei = (mint - Lc)/(Lmax - Lc);
+    else
+        safei = min(mincross/Lc , (Lmin - Lc)/(Lmax - Lc));
+    end
+end
+end
+
+    
+
+function ntack = howntack(xknext , yknext , xkstart , ykstart , psi_now , betaAW ,  lengthb2t , pc)
+    a = [cos(psi_now + betaAW) , sin(psi_now + betaAW)];
+    b = [xknext - xkstart , yknext - ykstart];
+    if a*b' > 0
+        i = 1;
+    elseif a*b' == 0
+        i = 2;
+    else
+        i = 3;
+    end
+    ntack = 1 + pc(i)/lengthb2t;
+end
+
+function multipCross = multip(rowvector1 , rowvector2)
+    multipCross = rowvector1(1)*rowvector2(2) - rowvector1(2)*rowvector2(1);
+end
